@@ -2,6 +2,7 @@
 /cmake-build-debug/
 /out/
 /.vs/
+/.idea/
 /CMakeUserPresets.json
 *.img
 *.user
