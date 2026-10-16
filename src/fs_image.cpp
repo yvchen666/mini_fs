@@ -1,3 +1,4 @@
+#include "block/flash_block_device.hpp"
 #include "fs_impl.hpp"
 
 #include <cstring>
@@ -53,7 +54,9 @@ FileSystem::~FileSystem() {
   if (impl_ && impl_->mounted) {
     static_cast<void>(impl_->commit_metadata());
     impl_->clear_open_files();
-    impl_->device.close();
+    if (impl_->device) {
+      impl_->device->close();
+    }
     impl_->mounted = false;
   }
 }
@@ -91,7 +94,9 @@ Error FileSystem::unmount() {
     return error;
   }
   impl_->clear_open_files();
-  impl_->device.close();
+  if (impl_->device) {
+    impl_->device->close();
+  }
   impl_->mounted = false;
   return Error::Ok;
 }
@@ -120,6 +125,20 @@ Error FileSystem::disk_info(DiskInfo& out) const {
   return Error::Ok;
 }
 
+Error FileSystem::storage_info(StorageInfo& out) const {
+  if (!impl_->mounted || !impl_->device) {
+    return Error::NotMounted;
+  }
+  return impl_->device->storage_info(out);
+}
+
+Error FileSystem::inject_fault(InjectedFault fault) {
+  if (!impl_->mounted || !impl_->device) {
+    return Error::NotMounted;
+  }
+  return impl_->device->inject_fault(fault);
+}
+
 Error FileSystem::Impl::format_image(const std::string& image_path, uint32_t block_count) {
   const uint32_t inode_count = kDefaultInodeCount;
   const uint32_t inode_bytes = inode_count * static_cast<uint32_t>(sizeof(Inode));
@@ -129,15 +148,21 @@ Error FileSystem::Impl::format_image(const std::string& image_path, uint32_t blo
     return Error::InvalidArgument;
   }
 
-  Error error = device.create(image_path, block_count);
+  device = std::make_unique<FlashBlockDevice>();
+  Error error = device->create(image_path, block_count);
   if (error != Error::Ok) {
+    device.reset();
     return error;
   }
 
   // 中途失败也要把文件句柄放开，否则 Windows 上随后删不掉镜像。
   struct CloseOnExit {
-    BlockDevice& device;
-    ~CloseOnExit() { device.close(); }
+    std::unique_ptr<BlockDevice>& device;
+    ~CloseOnExit() {
+      if (device) {
+        device->close();
+      }
+    }
   } close_on_exit{device};
 
   super = Superblock{};
@@ -181,7 +206,7 @@ Error FileSystem::Impl::format_image(const std::string& image_path, uint32_t blo
 
   std::vector<uint8_t> block(kBlockSize, 0);
   std::memcpy(block.data(), entries, sizeof(entries));
-  error = device.write_block(root_block, block.data());
+  error = device->write_block(root_block, block.data());
   if (error != Error::Ok) {
     return error;
   }
@@ -195,7 +220,7 @@ Error FileSystem::Impl::format_image(const std::string& image_path, uint32_t blo
   if (error != Error::Ok) {
     return error;
   }
-  error = device.sync();
+  error = device->sync();
   if (error != Error::Ok) {
     return error;
   }
@@ -203,7 +228,10 @@ Error FileSystem::Impl::format_image(const std::string& image_path, uint32_t blo
 }
 
 Error FileSystem::Impl::mount_image(const std::string& image_path) {
-  Error error = device.open(image_path);
+  if (!device) {
+    device = std::make_unique<FlashBlockDevice>();
+  }
+  Error error = device->open(image_path);
   if (error != Error::Ok) {
     return error;
   }
@@ -212,31 +240,31 @@ Error FileSystem::Impl::mount_image(const std::string& image_path) {
     Impl& self;
     bool failed = true;
     ~CloseOnFailure() {
-      if (failed) {
-        self.device.close();
+      if (failed && self.device) {
+        self.device->close();
         self.mounted = false;
       }
     }
   } guard{*this};
 
   std::vector<uint8_t> block(kBlockSize, 0);
-  error = device.read_block(0, block.data());
+  error = device->read_block(0, block.data());
   if (error != Error::Ok) {
     return error;
   }
   std::memcpy(&super, block.data(), sizeof(super));
-  error = validate_super(super, device.block_count());
+  error = validate_super(super, device->block_count());
   if (error != Error::Ok) {
     return error;
   }
 
   block_bitmap.assign(kBlockSize, 0);
   inode_bitmap.assign(kBlockSize, 0);
-  error = device.read_block(super.block_bitmap_block, block_bitmap.data());
+  error = device->read_block(super.block_bitmap_block, block_bitmap.data());
   if (error != Error::Ok) {
     return error;
   }
-  error = device.read_block(super.inode_bitmap_block, inode_bitmap.data());
+  error = device->read_block(super.inode_bitmap_block, inode_bitmap.data());
   if (error != Error::Ok) {
     return error;
   }
@@ -266,22 +294,22 @@ Error FileSystem::Impl::mount_image(const std::string& image_path) {
 Error FileSystem::Impl::commit_metadata() {
   // 先写两张位图，最后写超级块里的空闲计数。进程若在中间退出，
   // 最坏情况是下一次挂载发现计数对不上，而不是把仍在使用的块再分出去。
-  Error error = device.write_block(super.block_bitmap_block, block_bitmap.data());
+  Error error = device->write_block(super.block_bitmap_block, block_bitmap.data());
   if (error != Error::Ok) {
     return error;
   }
-  error = device.write_block(super.inode_bitmap_block, inode_bitmap.data());
+  error = device->write_block(super.inode_bitmap_block, inode_bitmap.data());
   if (error != Error::Ok) {
     return error;
   }
 
   std::vector<uint8_t> block(kBlockSize, 0);
   std::memcpy(block.data(), &super, sizeof(super));
-  error = device.write_block(0, block.data());
+  error = device->write_block(0, block.data());
   if (error != Error::Ok) {
     return error;
   }
-  return device.sync();
+  return device->sync();
 }
 
 Error FileSystem::Impl::check_allocation() const {
@@ -311,7 +339,7 @@ Error FileSystem::Impl::read_inode(uint32_t index, Inode& out) const {
   const uint32_t offset = byte % kBlockSize;
 
   std::vector<uint8_t> raw(kBlockSize, 0);
-  const Error error = device.read_block(block, raw.data());
+  const Error error = device->read_block(block, raw.data());
   if (error != Error::Ok) {
     return error;
   }
@@ -328,12 +356,12 @@ Error FileSystem::Impl::write_inode(uint32_t index, const Inode& inode) {
   const uint32_t offset = byte % kBlockSize;
 
   std::vector<uint8_t> raw(kBlockSize, 0);
-  Error error = device.read_block(block, raw.data());
+  Error error = device->read_block(block, raw.data());
   if (error != Error::Ok) {
     return error;
   }
   std::memcpy(raw.data() + offset, &inode, sizeof(inode));
-  return device.write_block(block, raw.data());
+  return device->write_block(block, raw.data());
 }
 
 Error FileSystem::Impl::alloc_block(uint32_t& block) {
@@ -356,7 +384,7 @@ Error FileSystem::Impl::alloc_block(uint32_t& block) {
   }
 
   const std::vector<uint8_t> zeros(kBlockSize, 0);
-  error = device.write_block(found, zeros.data());
+  error = device->write_block(found, zeros.data());
   if (error != Error::Ok) {
     bitmap::clear(block_bitmap.data(), found);
     ++super.free_blocks;

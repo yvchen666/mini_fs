@@ -34,6 +34,8 @@ class FileSystem {
   [[nodiscard]] Error stat(std::string_view path, FileStat& out) const;
   [[nodiscard]] Error list(std::string_view path, std::vector<DirItem>& out) const;
   [[nodiscard]] Error disk_info(DiskInfo& out) const;
+  [[nodiscard]] Error storage_info(StorageInfo& out) const;
+  [[nodiscard]] Error inject_fault(InjectedFault fault);
 
   // 没有 seek。描述符的偏移从 0 开始，read/write 依次往后走。
   [[nodiscard]] Error open(std::string_view path, OpenMode mode, int& fd);

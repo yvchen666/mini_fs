@@ -2,6 +2,8 @@
 
 // FileSystem 的内部状态。只被 src 下的实现文件包含。
 //
+// 块设备在 src/block、src/ftl、src/driver、src/device。这里只保存接口指针。
+//
 // fs_image.cpp  格式化、挂载、位图分配、inode 块读写
 // fs_path.cpp   路径解析、目录项、mkdir / rmdir / unlink / list / stat
 // fs_file.cpp   文件字节读写、truncate、open / read / write / close
@@ -12,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,7 +64,7 @@ inline bool is_dot_or_dotdot(const std::string& name) {
 }
 
 struct FileSystem::Impl {
-  BlockDevice device;
+  std::unique_ptr<BlockDevice> device;
   Superblock super{};
   std::vector<uint8_t> block_bitmap;
   std::vector<uint8_t> inode_bitmap;

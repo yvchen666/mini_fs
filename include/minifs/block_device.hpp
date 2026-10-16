@@ -3,29 +3,29 @@
 #include "minifs/types.hpp"
 
 #include <cstdint>
-#include <fstream>
 #include <string>
 
 namespace minifs {
 
-// 把一个普通文件当成磁盘。上层只按块号读写，不自己计算文件偏移。
+// 文件系统只依赖这个接口：按逻辑块号读写 4KB。
+// 下面可以是模拟 NOR，也可以以后换成别的介质，调用方不用改。
 class BlockDevice {
  public:
-  Error create(const std::string& path, uint32_t block_count);
-  Error open(const std::string& path);
-  void close();
+  virtual ~BlockDevice() = default;
 
-  bool is_open() const;
-  uint32_t block_count() const;
+  virtual Error create(const std::string& path, uint32_t block_count) = 0;
+  virtual Error open(const std::string& path) = 0;
+  virtual void close() = 0;
 
-  Error read_block(uint32_t index, void* buffer) const;
-  Error write_block(uint32_t index, const void* buffer);
-  Error sync();
+  virtual bool is_open() const = 0;
+  virtual uint32_t block_count() const = 0;
 
- private:
-  // read_block 需要在 const 路径上移动文件指针。
-  mutable std::fstream file_;
-  uint32_t block_count_ = 0;
+  virtual Error read_block(uint32_t index, void* buffer) const = 0;
+  virtual Error write_block(uint32_t index, const void* buffer) = 0;
+  virtual Error sync() = 0;
+
+  virtual Error storage_info(StorageInfo& out) const = 0;
+  virtual Error inject_fault(InjectedFault fault) = 0;
 };
 
 }  // namespace minifs

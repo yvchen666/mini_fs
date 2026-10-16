@@ -53,6 +53,7 @@ Error FileSystem::mkdir(std::string_view path) {
 
   uint32_t parent = 0;
   std::string name;
+  // /docs 会拆成父目录 / 和名字 docs。父目录必须已经存在。
   Error error = impl_->walk_parent(path, parent, name);
   if (error != Error::Ok) {
     return error;
@@ -68,6 +69,7 @@ Error FileSystem::mkdir(std::string_view path) {
   }
 
   uint32_t inode_index = 0;
+  // 新目录自己也要一个 inode，类型在下面写成 Directory。
   error = impl_->alloc_inode(inode_index);
   if (error != Error::Ok) {
     return error;
@@ -88,7 +90,8 @@ Error FileSystem::mkdir(std::string_view path) {
 
   std::vector<uint8_t> raw(kBlockSize, 0);
   std::memcpy(raw.data(), entries, sizeof(entries));
-  error = impl_->device.write_block(block, raw.data());
+  // 目录的内容放在数据块里。. 指向自己，.. 指向父目录。
+  error = impl_->device->write_block(block, raw.data());
   if (error != Error::Ok) {
     static_cast<void>(impl_->free_block(block));
     static_cast<void>(impl_->release_inode(inode_index));
@@ -106,12 +109,13 @@ Error FileSystem::mkdir(std::string_view path) {
     static_cast<void>(impl_->release_inode(inode_index));
     return error;
   }
-  error = impl_->device.sync();
+  error = impl_->device->sync();
   if (error != Error::Ok) {
     static_cast<void>(impl_->release_inode(inode_index));
     return error;
   }
 
+  // 最后才把名字写进父目录。前面失败的话，ls 看不到这个目录。
   error = impl_->add_entry(parent, name, inode_index);
   if (error != Error::Ok) {
     static_cast<void>(impl_->release_inode(inode_index));
@@ -155,12 +159,13 @@ Error FileSystem::create_file(std::string_view path) {
     static_cast<void>(impl_->release_inode(inode_index));
     return error;
   }
-  error = impl_->device.sync();
+  error = impl_->device->sync();
   if (error != Error::Ok) {
     static_cast<void>(impl_->release_inode(inode_index));
     return error;
   }
 
+  // 名字挂进父目录之后，文件才出现在 ls 里。字节还没写。
   error = impl_->add_entry(parent, name, inode_index);
   if (error != Error::Ok) {
     static_cast<void>(impl_->release_inode(inode_index));

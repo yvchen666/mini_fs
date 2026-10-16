@@ -7,7 +7,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(minifs_core STATIC
-  src/block_device.cpp
+  src/device/nor_controller.cpp
+  src/driver/nor_driver.cpp
+  src/ftl/ftl.cpp
+  src/block/flash_block_device.cpp
   src/fs_image.cpp
   src/fs_path.cpp
   src/fs_file.cpp
@@ -25,6 +28,7 @@ add_executable(minifs
 )
 
 target_link_libraries(minifs PRIVATE minifs_core)
+target_include_directories(minifs PRIVATE src)
 
 if(MSVC)
   target_compile_options(minifs_core PRIVATE /W4 /utf-8 /permissive-)

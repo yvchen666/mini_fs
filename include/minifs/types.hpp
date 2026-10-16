@@ -52,6 +52,28 @@ enum class Error {
   Corrupt,
   InvalidArgument,
   TooManyOpen,
+  PowerLoss,
+};
+
+// 自检用来把断电插在驱动的某一种命令上。正常读写保持 None。
+enum class InjectedFault {
+  None,
+  PowerCutOnProgram,
+  PowerCutOnErase,
+};
+
+// 闪存驱动和 FTL 的计数。文件系统的空闲块数仍看 DiskInfo。
+struct StorageInfo {
+  uint32_t logical_blocks = 0;
+  uint32_t physical_blocks = 0;
+  uint32_t free_physical = 0;
+  uint32_t garbage_physical = 0;
+  uint32_t page_reads = 0;
+  uint32_t page_programs = 0;
+  uint32_t block_erases = 0;
+  uint32_t interrupts = 0;
+  uint32_t wear_min = 0;
+  uint32_t wear_max = 0;
 };
 
 // 块 0 的前一段。其余字节保持 0。
@@ -153,6 +175,8 @@ inline const char* error_message(Error error) {
       return "参数无效";
     case Error::TooManyOpen:
       return "打开的文件过多";
+    case Error::PowerLoss:
+      return "模拟断电，这次操作没有完成";
   }
   return "未知错误";
 }

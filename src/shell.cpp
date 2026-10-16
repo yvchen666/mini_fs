@@ -137,6 +137,8 @@ class Shell {
       remove_dir(args);
     } else if (command == "df") {
       show_disk();
+    } else if (command == "flash") {
+      show_flash();
     } else if (command == "exit" || command == "quit") {
       return true;
     } else {
@@ -229,6 +231,7 @@ class Shell {
       std::cout << "用法: mkdir <路径>\n";
       return;
     }
+    // mkdir 的入口。后面进入 FileSystem::mkdir。
     static_cast<void>(report(fs_.mkdir(tokens[0])));
   }
 
@@ -264,6 +267,7 @@ class Shell {
       return;
     }
 
+    // 文件不存在就先占一个 inode 并挂上名字，内容仍是空的。
     const minifs::Error created = fs_.create_file(path);
     if (created != minifs::Error::Ok && created != minifs::Error::AlreadyExists) {
       std::cout << minifs::error_message(created) << '\n';
@@ -275,6 +279,7 @@ class Shell {
       return;
     }
     std::size_t transferred = 0;
+    // 文本从这里进入文件系统。fd 里记着目标 inode 和当前偏移。
     const minifs::Error error = fs_.write(fd, content.data(), content.size(), transferred);
     const minifs::Error closed = fs_.close(fd);
     if (error != minifs::Error::Ok) {
@@ -372,6 +377,19 @@ class Shell {
               << "数据区从块 " << info.data_block_start << " 开始\n";
   }
 
+  void show_flash() {
+    minifs::StorageInfo info{};
+    if (!report(fs_.storage_info(info))) {
+      return;
+    }
+    std::cout << "逻辑块: " << info.logical_blocks << "  物理擦除块: " << info.physical_blocks << '\n'
+              << "空闲擦除块: " << info.free_physical << "  待回收: " << info.garbage_physical << '\n'
+              << "页读取: " << info.page_reads << "  页编程: " << info.page_programs
+              << "  块擦除: " << info.block_erases << '\n'
+              << "中断: " << info.interrupts << '\n'
+              << "磨损次数: " << info.wear_min << " .. " << info.wear_max << '\n';
+  }
+
   minifs::FileSystem fs_;
   std::string image_ = "disk.img";
 };
@@ -395,6 +413,7 @@ void print_help() {
       << "  rm <路径>                删除文件\n"
       << "  rmdir <路径>             删除空目录\n"
       << "  df                       查看剩余块和 inode\n"
+      << "  flash                    查看闪存驱动、中断和磨损计数\n"
       << "  exit                     卸载并退出\n"
       << "\n"
       << "路径以 / 开头，用 / 分隔，例如 /docs/a.txt。命令行里的路径不要带空格。\n"

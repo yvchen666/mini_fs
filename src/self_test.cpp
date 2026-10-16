@@ -1,5 +1,6 @@
 #include "self_test.hpp"
 
+#include "block/flash_block_device.hpp"
 #include "minifs/filesystem.hpp"
 
 #include <array>
@@ -95,6 +96,74 @@ bool contains_name(const std::vector<minifs::DirItem>& items, const std::string&
     }
   }
   return false;
+}
+
+bool same_byte(const std::vector<uint8_t>& data, char value) {
+  for (uint8_t byte : data) {
+    if (byte != static_cast<unsigned char>(value)) {
+      return false;
+    }
+  }
+  return !data.empty();
+}
+
+int run_power_loss_test() {
+  const std::filesystem::path image_path =
+      std::filesystem::temp_directory_path() / "minifs-power.img";
+  const std::string image = image_path.string();
+  minifs::FlashBlockDevice device;
+  struct Cleanup {
+    minifs::FlashBlockDevice* device = nullptr;
+    std::filesystem::path path;
+    ~Cleanup() {
+      if (device != nullptr) {
+        device->close();
+      }
+      std::error_code error;
+      std::filesystem::remove(path, error);
+    }
+  } cleanup{&device, image_path};
+
+  if (!succeeded("创建闪存镜像", device.create(image, 16))) {
+    return 1;
+  }
+  std::vector<uint8_t> first(minifs::kBlockSize, static_cast<uint8_t>('A'));
+  std::vector<uint8_t> second(minifs::kBlockSize, static_cast<uint8_t>('B'));
+  std::vector<uint8_t> loaded(minifs::kBlockSize, 0);
+  if (!succeeded("写入第一版", device.write_block(1, first.data()))) {
+    return 1;
+  }
+
+  if (!succeeded("武装编程断电", device.inject_fault(minifs::InjectedFault::PowerCutOnProgram))) {
+    return 1;
+  }
+  if (!failed_with("编程中途断电", device.write_block(1, second.data()), minifs::Error::PowerLoss)) {
+    return 1;
+  }
+  device.close();
+  if (!succeeded("断电后重新打开", device.open(image))) {
+    return 1;
+  }
+  if (!succeeded("读回第一版", device.read_block(1, loaded.data())) || !same_byte(loaded, 'A')) {
+    std::cerr << "编程未提交时断电，应该保留旧数据\n";
+    return 1;
+  }
+
+  if (!succeeded("武装擦除断电", device.inject_fault(minifs::InjectedFault::PowerCutOnErase))) {
+    return 1;
+  }
+  if (!failed_with("擦除中途断电", device.write_block(1, second.data()), minifs::Error::PowerLoss)) {
+    return 1;
+  }
+  device.close();
+  if (!succeeded("擦除断电后重新打开", device.open(image))) {
+    return 1;
+  }
+  if (!succeeded("读回第二版", device.read_block(1, loaded.data())) || !same_byte(loaded, 'B')) {
+    std::cerr << "新数据提交后擦除旧块时断电，应该保留新数据\n";
+    return 1;
+  }
+  return 0;
 }
 
 }  // namespace
@@ -336,6 +405,28 @@ int run_self_test() {
     return 1;
   }
 
+  minifs::StorageInfo flash_before{};
+  if (!succeeded("读取闪存计数", fs.storage_info(flash_before))) {
+    return 1;
+  }
+  if (flash_before.logical_blocks != 128 || flash_before.physical_blocks != 256 ||
+      flash_before.page_programs == 0 || flash_before.interrupts == 0) {
+    std::cerr << "闪存驱动没有完成页编程或中断\n";
+    return 1;
+  }
+  if (!write_all(fs, "/big", full)) {
+    return 1;
+  }
+  minifs::StorageInfo flash_after{};
+  if (!succeeded("覆盖写之后的闪存计数", fs.storage_info(flash_after))) {
+    return 1;
+  }
+  if (flash_after.block_erases <= flash_before.block_erases ||
+      flash_after.page_programs <= flash_before.page_programs) {
+    std::cerr << "覆盖写没有产生新的页编程和擦除\n";
+    return 1;
+  }
+
   if (!succeeded("再次卸载", fs.unmount()) || !succeeded("再次挂载", fs.mount(image))) {
     return 1;
   }
@@ -357,6 +448,10 @@ int run_self_test() {
     return 1;
   }
 
-  std::cout << "自检通过：格式化、跨块读写、重新挂载、目录复用和 48KB 上限都符合预期。\n";
+  if (run_power_loss_test() != 0) {
+    return 1;
+  }
+
+  std::cout << "自检通过：格式化、跨块读写、重新挂载、目录复用、擦除和模拟断电都符合预期。\n";
   return 0;
 }

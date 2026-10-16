@@ -115,6 +115,7 @@ Error FileSystem::write(int fd, const void* buffer, std::size_t size, std::size_
   }
 
   uint32_t count = 0;
+  // fd 只是打开表的下标。真正写字节的是这个 inode 和它的当前偏移。
   const Error error =
       impl_->write_at(file.inode, file.offset, buffer, static_cast<uint32_t>(size), count);
   file.offset += count;
@@ -170,7 +171,7 @@ Error FileSystem::Impl::read_at(const Inode& inode,
       if (!bitmap::test(block_bitmap.data(), physical)) {
         return Error::Corrupt;
       }
-      const Error error = device.read_block(physical, block.data());
+      const Error error = device->read_block(physical, block.data());
       if (error != Error::Ok) {
         return error;
       }
@@ -234,6 +235,7 @@ Error FileSystem::Impl::write_at(uint32_t index,
   std::vector<uint8_t> block(kBlockSize, 0);
   Error write_error = Error::Ok;
 
+  // 文件偏移换成“第几个 4KB 逻辑块”和块内位置。
   while (transferred < size) {
     const uint32_t position = offset + transferred;
     const uint32_t logical = position / kBlockSize;
@@ -244,13 +246,14 @@ Error FileSystem::Impl::write_at(uint32_t index,
       break;
     }
 
-    write_error = device.read_block(physical, block.data());
+    write_error = device->read_block(physical, block.data());
     if (write_error != Error::Ok) {
       break;
     }
     const uint32_t chunk = std::min(size - transferred, kBlockSize - inner);
     std::memcpy(block.data() + inner, input + transferred, chunk);
-    write_error = device.write_block(physical, block.data());
+    // 块设备只能整块写。这里把改过的 4KB 交给 FTL。
+    write_error = device->write_block(physical, block.data());
     if (write_error != Error::Ok) {
       break;
     }
@@ -262,7 +265,7 @@ Error FileSystem::Impl::write_at(uint32_t index,
   }
   // 即使后面的写入失败，也把已经分配的块记进 inode，避免位图占用但 inode 丢失指针。
   const Error save_error = write_inode(index, inode);
-  const Error sync_error = device.sync();
+  const Error sync_error = device->sync();
   if (write_error != Error::Ok) {
     return write_error;
   }
@@ -297,7 +300,7 @@ Error FileSystem::Impl::truncate_inode(uint32_t index, uint32_t new_size) {
   if (error != Error::Ok) {
     return error;
   }
-  error = device.sync();
+  error = device->sync();
   if (error != Error::Ok) {
     return error;
   }
@@ -324,7 +327,7 @@ Error FileSystem::Impl::release_inode(uint32_t index) {
   if (error != Error::Ok) {
     return error;
   }
-  error = device.sync();
+  error = device->sync();
   if (error != Error::Ok) {
     return error;
   }
